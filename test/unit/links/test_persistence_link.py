@@ -177,6 +177,68 @@ class TestPersistenceLinkErrorHandling(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.pm.aread("s", "2"), {"id": 2})
 
 
+class TestPersistenceLinkErrorSubscribers(unittest.IsolatedAsyncioTestCase):
+    """Graph-chain `type: error` edges route through error_subscribers/publish_error
+    — a completely separate path from the on_error callback (linear chains only).
+    Found live: PersistenceLink._process_loop only ever checked self._on_error,
+    so a graph error edge attached to a persistence node's own write failure was
+    silently never wired to anything — the exception just propagated raw."""
+
+    async def asyncSetUp(self):
+        self.pm = Manager()
+        await self.pm.aregister("s", InMemory())
+
+    async def asyncTearDown(self):
+        await self.pm.aclose()
+
+    async def test_store_error_routes_to_error_subscribers(self):
+        from io_chains._internal.sentinel import ErrorEnvelope
+        from io_chains._internal.subscriber import Subscriber
+
+        # pre-seed so create() raises on item 1
+        await self.pm.aupsert("s", "1", {"id": 1})
+        envelopes: list[ErrorEnvelope] = []
+
+        class _Catcher(Subscriber):
+            async def push(self, envelope):
+                envelopes.append(envelope)
+
+        results = Collector()
+        link = PersistenceLink(manager=self.pm, store_id="s", key_fn=lambda x: str(x["id"]), operation="create")
+        link.error_subscribers = [_Catcher()]
+        chain = Chain(source=[{"id": 1}, {"id": 2}], links=[link], subscribers=[results])
+        await chain()
+
+        self.assertEqual(len(envelopes), 1)
+        self.assertEqual(envelopes[0].datum, {"id": 1})
+        self.assertIsInstance(envelopes[0].exc, KeyError)
+        # item 1 was routed to the error subscriber, not passed through downstream
+        self.assertEqual([item async for item in results], [{"id": 2}])
+        self.assertEqual(await self.pm.aread("s", "2"), {"id": 2})
+
+    async def test_on_error_callback_still_works_when_no_error_subscribers(self):
+        """Backward compatibility: on_error (linear chains) must still work unchanged."""
+        await self.pm.aupsert("s", "1", {"id": 1})
+        errors = []
+        results = Collector()
+        chain = Chain(
+            source=[{"id": 1}, {"id": 2}],
+            links=[
+                PersistenceLink(
+                    manager=self.pm,
+                    store_id="s",
+                    key_fn=lambda x: str(x["id"]),
+                    operation="create",
+                    on_error=lambda e, item: errors.append(item),
+                )
+            ],
+            subscribers=[results],
+        )
+        await chain()
+        self.assertEqual(errors, [{"id": 1}])
+        self.assertEqual([item async for item in results], [{"id": 1}, {"id": 2}])
+
+
 class TestPersistenceLinkMetrics(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.pm = Manager()

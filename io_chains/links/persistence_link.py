@@ -5,7 +5,7 @@ from typing import Any
 from oj_persistence import Manager
 
 from io_chains._internal.link import Link
-from io_chains._internal.sentinel import END_OF_STREAM, EndOfStream
+from io_chains._internal.sentinel import END_OF_STREAM, ErrorEnvelope, EndOfStream
 
 _OPERATIONS = {"upsert", "create", "update"}
 
@@ -94,6 +94,18 @@ class PersistenceLink(Link):
                 await self._write(self._key_fn(datum), datum)
             except Exception as e:
                 self._items_errored += 1
+                # Graph-chain `type: error` edges route through error_subscribers/
+                # publish_error — check that first, matching Processor's pattern.
+                # A handled error edge owns this item now: skip publishing it
+                # downstream (matches every other error-edge link in this
+                # codebase — the item is dead-lettered, not also passed through).
+                envelope = ErrorEnvelope(datum, e, link_name=self.name, retry_count=0)
+                handled = await self.publish_error(envelope)
+                if handled:
+                    continue
+                # on_error (linear-chain callback) is the fallback for anyone not
+                # using error edges — unchanged from before: the callback runs,
+                # then the item still publishes downstream either way.
                 if self._on_error is not None:
                     handler = self._on_error(e, datum)
                     if isawaitable(handler):
