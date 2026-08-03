@@ -20,7 +20,11 @@ async def get_rick_and_morty() -> AsyncGenerator[Response, None]:
 
 
 async def get_json(resp):
-    return await resp.json()
+    # httpx's Response.json() is synchronous (unlike aiohttp's), unrelated
+    # to any Python-version difference — always failed with
+    # "object dict can't be used in 'await' expression" regardless of
+    # interpreter version.
+    return resp.json()
 
 
 class TestProcessor(unittest.IsolatedAsyncioTestCase):
