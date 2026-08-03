@@ -1,6 +1,7 @@
 # io-chains
 
 [![License](https://img.shields.io/github/license/ownjoo/io-chains)](LICENSE)
+[![Top language](https://img.shields.io/github/languages/top/ownjoo/io-chains)](https://github.com/ownjoo/io-chains) [![Stars](https://img.shields.io/github/stars/ownjoo/io-chains)](https://github.com/ownjoo/io-chains/stargazers) [![Forks](https://img.shields.io/github/forks/ownjoo/io-chains)](https://github.com/ownjoo/io-chains/forks) [![Issues](https://img.shields.io/github/issues/ownjoo/io-chains)](https://github.com/ownjoo/io-chains/issues) [![Pull requests](https://img.shields.io/github/issues-pr/ownjoo/io-chains)](https://github.com/ownjoo/io-chains/pulls)
 
 A lightweight Python library for building async data pipelines using a publisher/subscriber pattern. Chain together data sources, transformations, and consumers with minimal boilerplate.
 
