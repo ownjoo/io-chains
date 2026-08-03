@@ -1,5 +1,7 @@
 # io-chains
 
+[![License](https://img.shields.io/github/license/ownjoo/io-chains)](LICENSE)
+
 A lightweight Python library for building async data pipelines using a publisher/subscriber pattern. Chain together data sources, transformations, and consumers with minimal boilerplate.
 
 ## Installation
