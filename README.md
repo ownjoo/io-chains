@@ -61,29 +61,9 @@ Processor(
 )
 ```
 
-After construction, set the observability hook:
+**Retries.** When a `processor=` function raises, the attempt is retried up to `max_retries` times with exponential backoff (`retry_delay × retry_backoff^attempt`). Only once retries are exhausted does the item count as failed and go through [error handling](#error-handling).
 
 ```python
-processor.on_error_event = lambda envelope: ...  # called once per failed item, after retries are exhausted
-```
-
-**Retry and error routing**
-
-When a `processor=` function raises:
-
-1. The attempt is retried up to `max_retries` times with exponential backoff (`retry_delay × retry_backoff^attempt`).
-2. Once retries are exhausted, `on_error_event(ErrorEnvelope)` fires (once per failed item) — useful for surfacing errors to a monitoring layer without affecting routing.
-3. After all retries are exhausted:
-   - If `error_subscribers` are wired, an `ErrorEnvelope` is published to them (the item is considered handled).
-   - Otherwise, the legacy `on_error(exc, datum)` callback is called if set.
-   - If neither is set, the exception propagates and stops the pipeline.
-
-```python
-# Error edges (graph chains) — wire a recovery processor as an error subscriber
-rate_limiter = Processor(processor=handle_rate_limit)
-fetcher.error_subscribers = rate_limiter
-
-# Inline on_error — skip or recover without a dedicated link
 Processor(
     source=records,
     processor=transform,
@@ -170,9 +150,11 @@ PersistenceLink(
     key_fn=lambda item: str(item["id"]),  # extracts the store key from each item
     operation="upsert",               # "upsert" (default) | "create" | "update"
     allow_inefficient=False,          # passed through to manager.upsert()
-    on_error=None,                    # callable(exc, item) — handle store errors without stopping the stream
+    on_error=None,                    # callable(exc, item) — see Error handling
 )
 ```
+
+A failed write follows the shared [error handling](#error-handling) contract. To keep passing an item downstream even though its write failed, return it from `on_error`: `on_error=lambda exc, item: item`.
 
 ---
 
@@ -235,9 +217,43 @@ await gather(
 
 ---
 
+### Error handling
+
+`Processor`, `Enricher`, and `PersistenceLink` all handle a failed item the same way. Both hooks can be passed to the constructor or set as attributes.
+
+1. **Error edges first.** If `error_subscribers` are wired, they receive an `ErrorEnvelope` and own the item from then on: it is not published downstream, and `on_error` is not called.
+2. **`on_error_event(envelope)` always fires**, once per failed item. It is for observability only and does not affect routing.
+3. **`on_error(exc, item)`** is called if no error edge handled the item:
+
+| `on_error` returns | Effect |
+|---|---|
+| `None`, `Skip()`, or `Skip` | Item is dropped (`items_skipped += 1`) |
+| any other value | Published in place of the failed item |
+| *(raises)* | That exception propagates and stops the pipeline |
+
+4. **Neither wired:** the original exception propagates.
+
+`items_errored` increments once per failed item, whichever path handles it. Both hooks may be sync or async.
+
+```python
+# Error edges (graph chains): wire a recovery link as an error subscriber
+fetcher.error_subscribers = Processor(processor=handle_rate_limit)
+
+# Inline: log and drop, or substitute a fallback value
+Processor(processor=parse, on_error=lambda exc, item: log.warning("bad %r", item))
+Processor(processor=parse, on_error=lambda exc, item: {"raw": item, "parsed": None})
+
+# Observability alongside either
+Processor(processor=parse, on_error_event=lambda env: metrics.incr(env.link_name))
+```
+
+> **Changed in 0.2.0.** These links used to disagree. Returning `None` from `Processor.on_error` re-raised the error, and `PersistenceLink` passed the item through whatever `on_error` returned. Now `None` drops the item in every link; return the item if you want it passed through. Returning the `Skip` class (no parentheses) used to leak it downstream as data; it now drops the item. `Enricher` now also honors `error_subscribers` and `on_error_event`.
+
+---
+
 ### `ErrorEnvelope`
 
-Wraps an item that caused an exception during processing. Published to `error_subscribers` after all retries are exhausted, and passed to `on_error_event` once per failed item.
+Wraps an item that caused an exception during processing. Published to `error_subscribers` and passed to `on_error_event` once per failed item, after retries are exhausted. See [Error handling](#error-handling).
 
 | Attribute | Type | Description |
 |---|---|---|
@@ -250,7 +266,7 @@ Wraps an item that caused an exception during processing. Published to `error_su
 ```python
 from io_chains import ErrorEnvelope
 
-def on_error(envelope: ErrorEnvelope):
+def on_error_event(envelope: ErrorEnvelope):
     print(f"[{envelope.link_name}] {type(envelope.exc).__name__} "
           f"after {envelope.retry_count} retries — item: {envelope.datum!r}")
 ```

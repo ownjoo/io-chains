@@ -3,7 +3,7 @@ from dataclasses import dataclass
 
 from io_chains._internal.link import Link
 from io_chains._internal.envelope import Envelope
-from io_chains._internal.sentinel import END_OF_STREAM, EndOfStream, Skip
+from io_chains._internal.sentinel import END_OF_STREAM, SKIP, EndOfStream
 
 
 def _identity(x):
@@ -104,13 +104,11 @@ class Enricher(Link):
                 try:
                     lookup[side_item[rel.to_field]] = side_item
                 except Exception as e:
-                    # A side item that can't be indexed is dropped from the join.
-                    self._items_errored += 1
-                    if self._on_error is None:
-                        raise
-                    result = self._on_error(e, side_item)
-                    if hasattr(result, "__await__"):
-                        await result
+                    # Unindexable side item: dropped from the join, or replaced by
+                    # whatever on_error returns (which must carry the join field).
+                    replacement = await self._handle_failure(side_item, e)
+                    if replacement is not SKIP:
+                        lookup[replacement[rel.to_field]] = replacement
             lookups[lookup_key] = lookup
 
         # Enrich and publish primary items
@@ -128,16 +126,9 @@ class Enricher(Link):
                         raw_key = item.get(rel.from_field)
                         enriched[rel.attach_as] = lookup.get(key_fn(raw_key)) if raw_key is not None else None
             except Exception as e:
-                self._items_errored += 1
-                if self._on_error is not None:
-                    result = self._on_error(e, item)
-                    if hasattr(result, "__await__"):
-                        result = await result
-                    if result is None or isinstance(result, Skip):
-                        continue
-                    enriched = result
-                else:
-                    raise
+                enriched = await self._handle_failure(item, e)
+                if enriched is SKIP:
+                    continue
             await self.publish(enriched)
 
         await self.publish(END_OF_STREAM)

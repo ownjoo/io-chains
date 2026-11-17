@@ -188,8 +188,7 @@ class TestRetryErrorMetric(unittest.IsolatedAsyncioTestCase):
         p = Processor(
             source=[1], processor=lambda x: 1 / 0, max_retries=3, on_error=lambda e, d: None, subscribers=Collector()
         )
-        with self.assertRaises(ZeroDivisionError):
-            await p()
+        await p()  # on_error returning None drops the item
         self.assertEqual(p.items_errored, 1)
 
 
