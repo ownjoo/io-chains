@@ -23,7 +23,7 @@ dependencies = [
 dev = ["oj-toolkit", "pytest"]
 
 [project.urls]
-Repository = "https://github.com/ownjoo-org/io-chains"
+Repository = "https://github.com/ownjoo/io-chains"
 
 [tool.ruff]
 target-version = "py311"
