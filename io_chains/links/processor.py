@@ -160,12 +160,12 @@ class Processor(Link):
                 break
             except Exception as e:
                 last_exc = e
-                self._items_errored += 1
                 if attempt < self._max_retries and self._retry_delay > 0:
                     delay = self._retry_delay * (self._retry_backoff ** attempt)
                     await asyncio.sleep(delay)
 
         if last_exc is not None:
+            self._items_errored += 1  # once per failed item, not per attempt
             # Build final envelope (retry_count = total attempts made).
             # publish_error sets envelope.handled = True before pushing to
             # error_subscribers, so on_error_event fires AFTER with the

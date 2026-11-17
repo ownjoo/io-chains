@@ -7,7 +7,7 @@ Covers:
   - retry succeeds before max_retries hit — publishes correct result
   - retry exhausted — falls through to on_error callback / raises
   - retry exhausted — routes ErrorEnvelope to error_subscribers
-  - on_error_event fires on every failed attempt (not just the last)
+  - on_error_event fires once per failed item, after retries are exhausted
   - retry_delay property setter enforces minimum 0
   - retry_backoff property setter is stored as-is
   - items_errored metric increments once per failed *item* (not per attempt)

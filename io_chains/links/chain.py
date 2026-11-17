@@ -56,6 +56,53 @@ class Chain(Linkable):
         if subscribers is not None:
             _output_of(links[-1]).subscribers = subscribers
 
+    # --- Publisher interface: delegate to the inner links ---
+    #
+    # A Chain never publishes itself; its last link does. Without these
+    # overrides, wiring a subscriber onto the Chain after construction lands on
+    # the Chain's own (never-published) list and is silently dropped.
+
+    def _leaves(self) -> list[Linkable]:
+        """All non-Chain links, depth-first."""
+        out: list[Linkable] = []
+        for link in self._links:
+            out.extend(link._leaves() if isinstance(link, Chain) else [link])
+        return out
+
+    @property
+    def subscribers(self) -> list:
+        return _output_of(self)._subscribers
+
+    @subscribers.setter
+    def subscribers(self, subscribers) -> None:
+        if not subscribers:
+            return  # also covers Publisher.__init__, which runs before _links exists
+        _output_of(self).subscribers = subscribers
+
+    def subscribe(self, subscriber, channel: str | None = None) -> None:
+        _output_of(self).subscribe(subscriber, channel=channel)
+
+    @property
+    def subscriber_count(self) -> int:
+        return _output_of(self).subscriber_count
+
+    @property
+    def items_out(self) -> int:
+        return _output_of(self).items_out
+
+    @property
+    def error_subscribers(self) -> list:
+        return self._error_subscribers
+
+    @error_subscribers.setter
+    def error_subscribers(self, subscribers) -> None:
+        """Error edges on a Chain catch failures from every link inside it."""
+        if not subscribers:
+            return
+        Linkable.error_subscribers.fset(self, subscribers)  # validates + records on the Chain
+        for leaf in self._leaves():
+            leaf.error_subscribers = subscribers
+
     def _register_upstream(self) -> None:
         """Delegate upstream registration to the first link (supports fan-in to a Chain)."""
         first = _input_of(self._links[0])

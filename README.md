@@ -64,7 +64,7 @@ Processor(
 After construction, set the observability hook:
 
 ```python
-processor.on_error_event = lambda envelope: ...  # called on every failed attempt
+processor.on_error_event = lambda envelope: ...  # called once per failed item, after retries are exhausted
 ```
 
 **Retry and error routing**
@@ -72,7 +72,7 @@ processor.on_error_event = lambda envelope: ...  # called on every failed attemp
 When a `processor=` function raises:
 
 1. The attempt is retried up to `max_retries` times with exponential backoff (`retry_delay × retry_backoff^attempt`).
-2. On every failed attempt, `on_error_event(ErrorEnvelope)` fires — useful for surfacing errors to a monitoring layer without affecting routing.
+2. Once retries are exhausted, `on_error_event(ErrorEnvelope)` fires (once per failed item) — useful for surfacing errors to a monitoring layer without affecting routing.
 3. After all retries are exhausted:
    - If `error_subscribers` are wired, an `ErrorEnvelope` is published to them (the item is considered handled).
    - Otherwise, the legacy `on_error(exc, datum)` callback is called if set.
@@ -237,7 +237,7 @@ await gather(
 
 ### `ErrorEnvelope`
 
-Wraps an item that caused an exception during processing. Published to `error_subscribers` after all retries are exhausted, and passed to `on_error_event` on every failed attempt.
+Wraps an item that caused an exception during processing. Published to `error_subscribers` after all retries are exhausted, and passed to `on_error_event` once per failed item.
 
 | Attribute | Type | Description |
 |---|---|---|

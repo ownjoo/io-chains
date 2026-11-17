@@ -1,7 +1,8 @@
-from asyncio import Queue, QueueEmpty
+from asyncio import QueueEmpty
 from logging import getLogger
 from typing import Any
 
+from io_chains._internal.buffer import Buffer
 from io_chains._internal.sentinel import EndOfStream
 from io_chains._internal.subscriber import Subscriber
 
@@ -22,7 +23,7 @@ class Collector(Subscriber):
     """
 
     def __init__(self, maxsize: int = 0):
-        self._queue: Queue = Queue(maxsize=maxsize)
+        self._queue: Buffer = Buffer(maxsize=maxsize)
         self._upstream_count: int = 0  # 0 = single-upstream legacy mode
         self._eos_received: int = 0
 
@@ -58,11 +59,7 @@ class Collector(Subscriber):
         Call after the pipeline has completed to free memory held by unconsumed
         output.  Items already yielded by iteration are unaffected.
         """
-        while not self._queue.empty():
-            try:
-                self._queue.get_nowait()
-            except QueueEmpty:
-                break
+        self._queue.drain()
 
     def __iter__(self):
         """Drain buffered items synchronously. Only use after the pipeline has completed."""

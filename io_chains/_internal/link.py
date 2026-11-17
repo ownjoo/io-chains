@@ -2,16 +2,19 @@ import asyncio
 import time
 import tracemalloc
 from abc import abstractmethod
-from asyncio import Queue
 from collections.abc import Callable
 from logging import getLogger
 from typing import Any
 
+from io_chains._internal.buffer import Buffer
 from io_chains._internal.linkable import Linkable
 from io_chains._internal.metrics import LinkMetrics
 from io_chains._internal.sentinel import END_OF_STREAM, EndOfStream
 
 logger = getLogger(__name__)
+
+# Strong references to fire-and-forget EOS tasks so they can't be GC'd mid-flight.
+_background_tasks: set[asyncio.Task] = set()
 
 
 class Link(Linkable):
@@ -29,7 +32,7 @@ class Link(Linkable):
 
     def __init__(self, *args, queue_size: int = 0, on_error: Callable | None = None, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self._queue: Queue = Queue(maxsize=queue_size)
+        self._queue: Buffer = Buffer(maxsize=queue_size)
         self._on_error: Callable | None = None
         self._on_error_event: Callable | None = None
         self._upstream_count: int = 0
@@ -178,12 +181,7 @@ class Link(Linkable):
         failed pipelines where items may remain.
         """
         super().close()  # Publisher.close() — clears _subscribers
-        q = self._queue
-        while not q.empty():
-            try:
-                q.get_nowait()
-            except Exception:  # noqa: BLE001
-                break
+        self._queue.drain()
 
     @abstractmethod
     async def run(self) -> None:
@@ -195,5 +193,8 @@ class Link(Linkable):
         except asyncio.CancelledError:
             # Schedule EOS on the event loop independently of this (cancelled) task
             # so downstream links receive end-of-stream and don't hang.
-            asyncio.get_running_loop().create_task(self.publish(END_OF_STREAM))
+            # Buffer.put never blocks on EOS, so this completes for library links.
+            task = asyncio.get_running_loop().create_task(self.publish(END_OF_STREAM))
+            _background_tasks.add(task)
+            task.add_done_callback(_background_tasks.discard)
             raise
