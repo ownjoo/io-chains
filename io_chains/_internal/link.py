@@ -1,6 +1,7 @@
 import asyncio
 import time
 import tracemalloc
+from inspect import isawaitable
 from abc import abstractmethod
 from collections.abc import Callable
 from logging import getLogger
@@ -9,12 +10,16 @@ from typing import Any
 from io_chains._internal.buffer import Buffer
 from io_chains._internal.linkable import Linkable
 from io_chains._internal.metrics import LinkMetrics
-from io_chains._internal.sentinel import END_OF_STREAM, EndOfStream
+from io_chains._internal.sentinel import END_OF_STREAM, SKIP, EndOfStream, ErrorEnvelope, is_skip
 
 logger = getLogger(__name__)
 
 # Strong references to fire-and-forget EOS tasks so they can't be GC'd mid-flight.
 _background_tasks: set[asyncio.Task] = set()
+
+
+async def _maybe_await(value: Any) -> Any:
+    return await value if isawaitable(value) else value
 
 
 class Link(Linkable):
@@ -30,7 +35,14 @@ class Link(Linkable):
       - run() — consume from self._queue and publish results
     """
 
-    def __init__(self, *args, queue_size: int = 0, on_error: Callable | None = None, **kwargs) -> None:
+    def __init__(
+        self,
+        *args,
+        queue_size: int = 0,
+        on_error: Callable | None = None,
+        on_error_event: Callable | None = None,
+        **kwargs,
+    ) -> None:
         super().__init__(*args, **kwargs)
         self._queue: Buffer = Buffer(maxsize=queue_size)
         self._on_error: Callable | None = None
@@ -46,6 +58,7 @@ class Link(Linkable):
         self._start_time: float = 0.0
 
         self.on_error = on_error
+        self.on_error_event = on_error_event
 
     @property
     def on_error(self) -> Callable | None:
@@ -112,6 +125,33 @@ class Link(Linkable):
             if depth > self._queue_depth_max:
                 self._queue_depth_max = depth
 
+    async def _handle_failure(self, datum: Any, exc: Exception, retry_count: int = 0) -> Any:
+        """The one error contract every link follows when an item fails.
+
+        Returns SKIP if the item should be dropped, otherwise the value to use
+        in its place. Raises ``exc`` if nothing handles it.
+
+          1. error_subscribers (error edges) get an ErrorEnvelope; if any are
+             wired they own the item and on_error is not consulted.
+          2. on_error_event(envelope) always fires (observability only).
+          3. on_error(exc, datum): None / Skip -> drop; other value -> replace;
+             raising -> propagates.
+        """
+        self._items_errored += 1
+        envelope = ErrorEnvelope(datum, exc, link_name=self.name, retry_count=retry_count)
+        handled = await self.publish_error(envelope)
+        if self._on_error_event is not None:
+            await _maybe_await(self._on_error_event(envelope))
+        if handled:
+            return SKIP
+        if self._on_error is None:
+            raise exc
+        result = await _maybe_await(self._on_error(exc, datum))
+        if result is None or is_skip(result):
+            self._items_skipped += 1
+            return SKIP
+        return result
+
     def _reset_metrics(self) -> None:
         self._items_in = 0
         self._items_out = 0
@@ -169,9 +209,7 @@ class Link(Linkable):
             },
         )
         if self._on_metrics is not None:
-            result = self._on_metrics(metrics)
-            if hasattr(result, "__await__"):
-                await result
+            await _maybe_await(self._on_metrics(metrics))
 
     def close(self) -> None:
         """Drain the internal queue and release subscriber references.

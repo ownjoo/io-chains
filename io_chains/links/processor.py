@@ -6,7 +6,7 @@ from logging import getLogger
 from typing import Any
 
 from io_chains._internal.link import Link
-from io_chains._internal.sentinel import END_OF_STREAM, EndOfStream, ErrorEnvelope, Skip
+from io_chains._internal.sentinel import END_OF_STREAM, SKIP, EndOfStream, is_skip
 
 logger = getLogger(__name__)
 
@@ -108,23 +108,11 @@ class Processor(Link):
                 async for datum in self.input:
                     await self.push(datum)
             except Exception as e:
-                self._items_errored += 1
-                envelope = ErrorEnvelope(None, e, link_name=self.name, retry_count=0)
-                handled = await self.publish_error(envelope)
-                if self._on_error_event is not None:
-                    evt_result = self._on_error_event(envelope)
-                    if isawaitable(evt_result):
-                        await evt_result
-                if handled:
-                    pass
-                elif self._on_error is not None:
-                    result = self._on_error(e, None)
-                    if isawaitable(result):
-                        result = await result
-                    if result is not None and not isinstance(result, Skip):
-                        await self.push(result)
-                else:
-                    raise
+                # The source itself failed: it can't be resumed, so a replacement
+                # from on_error becomes one last *input* item before EOS.
+                replacement = await self._handle_failure(None, e)
+                if replacement is not SKIP:
+                    await self.push(replacement)
             await self.push(END_OF_STREAM)
         # else: subscriber-only mode — EOS arrives via push() from upstream
 
@@ -165,38 +153,13 @@ class Processor(Link):
                     await asyncio.sleep(delay)
 
         if last_exc is not None:
-            self._items_errored += 1  # once per failed item, not per attempt
-            # Build final envelope (retry_count = total attempts made).
-            # publish_error sets envelope.handled = True before pushing to
-            # error_subscribers, so on_error_event fires AFTER with the
-            # correct handled state.
-            envelope = ErrorEnvelope(
-                datum, last_exc, link_name=self.name,
-                retry_count=self._max_retries,
-            )
-            # Route to error_subscribers if wired
-            handled = await self.publish_error(envelope)
-            if self._on_error_event is not None:
-                evt_result = self._on_error_event(envelope)
-                if isawaitable(evt_result):
-                    await evt_result
-            if handled:
-                return
-            # Fall back to on_error callback (legacy simple handler)
-            if self._on_error is not None:
-                cb_result = self._on_error(last_exc, datum)
-                if isawaitable(cb_result):
-                    cb_result = await cb_result
-                if isinstance(cb_result, Skip):
-                    self._items_skipped += 1
-                    return
-                elif cb_result is not None:
-                    await self.publish(cb_result)
-                    return
-            raise last_exc
+            replacement = await self._handle_failure(datum, last_exc, retry_count=self._max_retries)
+            if replacement is not SKIP:
+                await self.publish(replacement)
+            return
 
         # Success path
-        if isinstance(result, Skip):
+        if is_skip(result):
             self._items_skipped += 1
             return
         elif isgenerator(result):

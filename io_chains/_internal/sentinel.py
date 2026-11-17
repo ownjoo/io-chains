@@ -33,6 +33,11 @@ END_OF_STREAM = EndOfStream()
 SKIP = Skip()
 
 
+def is_skip(value: Any) -> bool:
+    """True for Skip() and for the Skip class itself (``return Skip`` is an easy slip)."""
+    return value is Skip or isinstance(value, Skip)
+
+
 class ErrorEnvelope:
     """
     Wraps an item that caused an exception in a processor.

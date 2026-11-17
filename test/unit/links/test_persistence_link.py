@@ -166,7 +166,8 @@ class TestPersistenceLinkErrorHandling(unittest.IsolatedAsyncioTestCase):
                     store_id="s",
                     key_fn=lambda x: str(x["id"]),
                     operation="create",
-                    on_error=lambda e, item: errors.append(item),
+                    # Return the item to pass it through despite the failed write.
+                    on_error=lambda e, item: errors.append(item) or item,
                 )
             ],
             subscribers=[results],
@@ -229,7 +230,8 @@ class TestPersistenceLinkErrorSubscribers(unittest.IsolatedAsyncioTestCase):
                     store_id="s",
                     key_fn=lambda x: str(x["id"]),
                     operation="create",
-                    on_error=lambda e, item: errors.append(item),
+                    # Return the item to pass it through despite the failed write.
+                    on_error=lambda e, item: errors.append(item) or item,
                 )
             ],
             subscribers=[results],
