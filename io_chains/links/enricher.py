@@ -6,6 +6,10 @@ from io_chains._internal.envelope import Envelope
 from io_chains._internal.sentinel import END_OF_STREAM, EndOfStream, Skip
 
 
+def _identity(x):
+    return x
+
+
 @dataclass
 class Relation:
     """Describes a foreign-key-style join between the primary channel and a side channel.
@@ -88,22 +92,38 @@ class Enricher(Link):
                 else:
                     side_channels.setdefault(datum.channel, []).append(datum.data)
 
-        # Build lookup dicts for each relation's channel
-        lookups: dict[str, dict] = {}
+        # Build one lookup per (channel, field): two relations can join the same
+        # channel on different fields, so keying by channel alone would clobber.
+        lookups: dict[tuple[str, str], dict] = {}
         for rel in self._relations:
-            channel_items = side_channels.get(rel.to_channel, [])
-            lookups[rel.to_channel] = {item[rel.to_field]: item for item in channel_items}
+            lookup_key = (rel.to_channel, rel.to_field)
+            if lookup_key in lookups:
+                continue
+            lookup: dict = {}
+            for side_item in side_channels.get(rel.to_channel, []):
+                try:
+                    lookup[side_item[rel.to_field]] = side_item
+                except Exception as e:
+                    # A side item that can't be indexed is dropped from the join.
+                    self._items_errored += 1
+                    if self._on_error is None:
+                        raise
+                    result = self._on_error(e, side_item)
+                    if hasattr(result, "__await__"):
+                        await result
+            lookups[lookup_key] = lookup
 
         # Enrich and publish primary items
         for item in primary_items:
             try:
                 enriched = dict(item)
                 for rel in self._relations:
-                    lookup = lookups.get(rel.to_channel, {})
-                    key_fn = rel.key_transform or (lambda x: x)
+                    lookup = lookups[(rel.to_channel, rel.to_field)]
+                    key_fn = rel.key_transform or _identity
                     if rel.many:
                         raw_keys = item.get(rel.from_field, [])
-                        enriched[rel.attach_as] = [lookup[key_fn(k)] for k in raw_keys if key_fn(k) in lookup]
+                        keys = (key_fn(k) for k in raw_keys)
+                        enriched[rel.attach_as] = [lookup[k] for k in keys if k in lookup]
                     else:
                         raw_key = item.get(rel.from_field)
                         enriched[rel.attach_as] = lookup.get(key_fn(raw_key)) if raw_key is not None else None

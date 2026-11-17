@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from asyncio import TaskGroup
+from asyncio import gather
 from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any
 
@@ -121,12 +121,7 @@ class Publisher:
         if not self._error_subscribers:
             return False
         envelope.handled = True
-        if len(self._error_subscribers) == 1:
-            await self._error_subscribers[0].push(envelope)
-        else:
-            async with TaskGroup() as tg:
-                for sub in self._error_subscribers:
-                    tg.create_task(sub.push(envelope))
+        await _fan_out(self._error_subscribers, envelope)
         return True
 
     async def publish(self, datum: Any) -> None:
@@ -134,9 +129,22 @@ class Publisher:
             self._items_out += 1
         if not self._subscribers:
             return
-        if len(self._subscribers) == 1:
-            await self._subscribers[0].push(datum)
-        else:
-            async with TaskGroup() as tg:
-                for subscriber in self._subscribers:
-                    tg.create_task(subscriber.push(datum))
+        await _fan_out(self._subscribers, datum)
+
+
+async def _fan_out(subscribers: list[Subscriber], datum: Any) -> None:
+    """Push datum to every subscriber concurrently.
+
+    Every subscriber gets the item even if a sibling fails; failures are raised
+    afterwards (one directly, several as an ExceptionGroup). A TaskGroup would
+    instead cancel the healthy siblings' in-flight pushes.
+    """
+    if len(subscribers) == 1:
+        await subscribers[0].push(datum)
+        return
+    results = await gather(*(s.push(datum) for s in subscribers), return_exceptions=True)
+    errors = [r for r in results if isinstance(r, BaseException)]
+    if len(errors) == 1:
+        raise errors[0]
+    if errors:
+        raise BaseExceptionGroup('subscriber push failed', errors)
